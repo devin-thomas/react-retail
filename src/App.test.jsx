@@ -1,9 +1,8 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import App from "./App";
-import { appReducer } from "./store";
+import { cartReducer, initialCartState } from "./reducers/cartReducer";
+import { renderApp } from "./test/renderApp";
 
 const products = [
   {
@@ -16,79 +15,82 @@ const products = [
   },
 ];
 
-function renderApp() {
-  const queryClient = new QueryClient({
-    defaultOptions: {
-      queries: {
-        retry: false,
-      },
-    },
-  });
-
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <App />
-    </QueryClientProvider>
-  );
-}
-
-describe("appReducer", () => {
-  test("adds and updates cart items predictably", () => {
-    const addedState = appReducer(
-      {
-        cart: [],
-        isAuthenticated: false,
-        profileName: "",
-        recentlyViewed: [],
-      },
-      { type: "cart/add", payload: products[0] }
-    );
-
-    const updatedState = appReducer(addedState, {
-      type: "cart/update",
-      payload: { id: 1, quantity: 3 },
+describe("cartReducer", () => {
+  test("adds products and updates quantities predictably", () => {
+    const afterAdd = cartReducer(initialCartState, {
+      type: "cart/add",
+      payload: products[0],
     });
 
-    expect(updatedState.cart[0].quantity).toBe(3);
+    const afterSecondAdd = cartReducer(afterAdd, {
+      type: "cart/add",
+      payload: products[0],
+    });
+
+    const afterUpdate = cartReducer(afterSecondAdd, {
+      type: "cart/updateQuantity",
+      payload: { productId: 1, quantity: 4 },
+    });
+
+    expect(afterUpdate).toHaveLength(1);
+    expect(afterUpdate[0].quantity).toBe(4);
   });
 });
 
 describe("React Retail", () => {
   beforeEach(() => {
     const storage = {};
+
     Object.defineProperty(window, "localStorage", {
+      configurable: true,
       value: {
         getItem: vi.fn((key) => storage[key] ?? null),
         setItem: vi.fn((key, value) => {
           storage[key] = value;
         }),
+        removeItem: vi.fn((key) => {
+          delete storage[key];
+        }),
         clear: vi.fn(() => {
           Object.keys(storage).forEach((key) => delete storage[key]);
         }),
       },
-      writable: true,
     });
+
     window.localStorage.clear();
     vi.stubGlobal(
       "fetch",
-      vi.fn((url) => {
-        if (String(url).includes("/products")) {
+      vi.fn((url, options) => {
+        if (String(url).endsWith("/products")) {
           return Promise.resolve({
             ok: true,
             json: () => Promise.resolve(products),
           });
         }
 
-        return Promise.resolve({
-          ok: true,
-          json: () =>
-            Promise.resolve({
-              id: 1,
-              items: [],
-              customer: {},
-              createdAt: new Date().toISOString(),
-            }),
-        });
+        if (String(url).includes("/products/")) {
+          return Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve(products[0]),
+          });
+        }
+
+        if (String(url).endsWith("/orders")) {
+          const requestBody = JSON.parse(options.body);
+
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                id: 12,
+                createdAt: "2026-06-29T18:00:00.000Z",
+                customer: requestBody.customer,
+                items: requestBody.items,
+              }),
+          });
+        }
+
+        return Promise.reject(new Error(`Unexpected request: ${String(url)}`));
       })
     );
   });
@@ -97,7 +99,7 @@ describe("React Retail", () => {
     vi.unstubAllGlobals();
   });
 
-  test("loads products and adds one to the cart", async () => {
+  test("redirects through login and completes checkout", async () => {
     const user = userEvent.setup();
 
     renderApp();
@@ -105,9 +107,27 @@ describe("React Retail", () => {
     expect(await screen.findByText("React Retail T-Shirt")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Add to cart" }));
+    await user.click(screen.getByRole("link", { name: "Checkout" }));
 
-    await waitFor(() =>
-      expect(screen.getByRole("link", { name: "Cart (1)" })).toBeInTheDocument()
+    expect(
+      await screen.findByRole("heading", { name: "Sign in to continue" })
+    ).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Display name"), "Devin Thomas");
+    await user.click(
+      screen.getByRole("button", { name: "Continue to checkout" })
     );
+
+    expect(
+      await screen.findByRole("heading", { name: "Review your order" })
+    ).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Email"), "devin@example.com");
+    await user.type(screen.getByLabelText("Address"), "123 State Street");
+    await user.click(screen.getByRole("button", { name: "Place order" }));
+
+    expect(
+      await screen.findByRole("heading", { name: "Thanks for your purchase" })
+    ).toBeInTheDocument();
   });
 });

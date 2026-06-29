@@ -6,6 +6,6 @@ export default defineConfig(({ mode }) => ({
   plugins: [react()],
   test: {
     environment: "jsdom",
-    setupFiles: "./src/test/setup.js",
+    setupFiles: ["src/test/setup.js"],
   },
 }));
